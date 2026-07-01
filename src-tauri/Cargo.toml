@@ -1,0 +1,63 @@
+[package]
+name = "ozark-wallet"
+version = "0.2.9"
+description = "OZark Wallet - Bitcoin ARK Layer 2"
+authors = ["OZark"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "ozark_wallet_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+tonic-build = "0.12"
+serde_json = "1"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-stronghold = "2"
+tauri-plugin-barcode-scanner = "2"
+tauri-plugin-nfc = "2"
+tauri-plugin-deep-link = "2"
+iota_stronghold = "2.1"
+bip39 = { version = "2.1", features = ["rand"] }
+bdk_wallet = { version = "3.1", features = ["keys-bip39", "rusqlite"] }
+bdk_esplora = { version = "0.22", features = ["async-https-rustls", "tokio"] }
+bark = { version = "0.2", package = "bark-wallet", default-features = false, features = ["rand", "sqlite", "native", "tls-webpki-roots", "bitcoind-rpc"] }
+tokio = { version = "1", features = ["rt", "sync"] }
+tonic = { version = "0.12", features = ["tls", "tls-roots"] }
+prost = "0.13"
+hex = "0.4"
+bitcoin = "0.32"
+zeroize = { version = "1", features = ["derive"] }
+rand = "0.8"
+rust-argon2 = "3.0"
+aes-gcm = "0.10"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+url = "2"
+log = "0.4"
+arti-client = { version = "0.20", features = ["tokio", "onion-service-client", "rustls"], default-features = false }
+tor-rtcompat = { version = "0.20", default-features = false, features = ["tokio", "rustls"] }
+hyper-util = "0.1"
+http = "1"
+tower-service = "0.3"
+# TLS is done inside the Tor connector: litd/tapd certs are self-signed with
+# CA:TRUE, which rustls' webpki rejects as a leaf (CaUsedAsEndEntity). We pin the
+# cert with a custom verifier instead. ring provider to match arti (no aws-lc-rs).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# native-tls falls back to OpenSSL on Android; vendored avoids needing system libs.
+openssl = { version = "0.10", features = ["vendored"] }
+android_logger = "0.14"
+

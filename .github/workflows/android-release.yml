@@ -1,0 +1,154 @@
+name: Android Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      PROTOC: /usr/bin/protoc
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      # Default tapd node, injected at compile time from repo secrets so the
+      # credentials are NOT stored in source. Leave the secrets unset to ship an
+      # APK with no embedded default node (user must configure their own tapd).
+      OZARK_DEFAULT_TAPD_HOST: ${{ secrets.OZARK_DEFAULT_TAPD_HOST }}
+      OZARK_DEFAULT_TAPD_CERT: ${{ secrets.OZARK_DEFAULT_TAPD_CERT }}
+      OZARK_DEFAULT_TAPD_MACAROON: ${{ secrets.OZARK_DEFAULT_TAPD_MACAROON }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27b
+          link-to-sdk: true
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Android universal APK
+        env:
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          NDK_BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "Using NDK bin: $NDK_BIN"
+
+          # Some C dependencies (OpenSSL, libsodium) look for target-prefixed ar/ranlib.
+          mkdir -p "$HOME/.ndk-wrappers"
+          ln -sf "$NDK_BIN/llvm-ar" "$HOME/.ndk-wrappers/arm-linux-androideabi-ar"
+          ln -sf "$NDK_BIN/llvm-ranlib" "$HOME/.ndk-wrappers/arm-linux-androideabi-ranlib"
+          ln -sf "$NDK_BIN/llvm-ar" "$HOME/.ndk-wrappers/aarch64-linux-android-ar"
+          ln -sf "$NDK_BIN/llvm-ranlib" "$HOME/.ndk-wrappers/aarch64-linux-android-ranlib"
+          ln -sf "$NDK_BIN/llvm-ar" "$HOME/.ndk-wrappers/i686-linux-android-ar"
+          ln -sf "$NDK_BIN/llvm-ranlib" "$HOME/.ndk-wrappers/i686-linux-android-ranlib"
+          ln -sf "$NDK_BIN/llvm-ar" "$HOME/.ndk-wrappers/x86_64-linux-android-ar"
+          ln -sf "$NDK_BIN/llvm-ranlib" "$HOME/.ndk-wrappers/x86_64-linux-android-ranlib"
+          export PATH="$HOME/.ndk-wrappers:$PATH"
+
+          export CC_armv7_linux_androideabi="$NDK_BIN/armv7a-linux-androideabi24-clang"
+          export CXX_armv7_linux_androideabi="$NDK_BIN/armv7a-linux-androideabi24-clang++"
+          export AR_armv7_linux_androideabi="$NDK_BIN/llvm-ar"
+          export RANLIB_armv7_linux_androideabi="$NDK_BIN/llvm-ranlib"
+
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang"
+          export CXX_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang++"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          export RANLIB_aarch64_linux_android="$NDK_BIN/llvm-ranlib"
+
+          export CC_i686_linux_android="$NDK_BIN/i686-linux-android24-clang"
+          export CXX_i686_linux_android="$NDK_BIN/i686-linux-android24-clang++"
+          export AR_i686_linux_android="$NDK_BIN/llvm-ar"
+          export RANLIB_i686_linux_android="$NDK_BIN/llvm-ranlib"
+
+          export CC_x86_64_linux_android="$NDK_BIN/x86_64-linux-android24-clang"
+          export CXX_x86_64_linux_android="$NDK_BIN/x86_64-linux-android24-clang++"
+          export AR_x86_64_linux_android="$NDK_BIN/llvm-ar"
+          export RANLIB_x86_64_linux_android="$NDK_BIN/llvm-ranlib"
+
+          npm run tauri android build -- --apk
+
+      - name: Sign APK
+        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          APK_DIR="src-tauri/gen/android/app/build/outputs/apk/universal/release"
+          UNSIGNED_APK="$APK_DIR/app-universal-release-unsigned.apk"
+          SIGNED_APK="$APK_DIR/app-universal-release.apk"
+
+          if [ -f "$UNSIGNED_APK" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/ozark-wallet.keystore
+            # Pick the latest installed apksigner (avoid wildcard expansion issues).
+            APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+            "$APKSIGNER" sign \
+              --ks /tmp/ozark-wallet.keystore \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --out "$SIGNED_APK" \
+              "$UNSIGNED_APK"
+            rm -f /tmp/ozark-wallet.keystore
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          name: OZark Wallet ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

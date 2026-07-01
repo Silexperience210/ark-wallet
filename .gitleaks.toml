@@ -1,0 +1,18 @@
+# gitleaks config for OZark — https://github.com/gitleaks/gitleaks
+title = "OZark gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe test fixtures and example templates (NOT real secrets)"
+regexes = [
+  # Canonical public BIP39 test vector (all-zero entropy) used in unit tests
+  '''abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon (about|zebra)''',
+  # Unit-test password fixture in backup/crypto tests
+  '''super_secure_password_123''',
+]
+paths = [
+  '''tapd-defaults\.example\.json''',
+  '''\.env\.example''',
+]

@@ -1,0 +1,5 @@
+{
+  "host": "http://your-tapd-host:10029",
+  "cert_pem": "",
+  "macaroon_hex": ""
+}

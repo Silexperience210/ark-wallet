@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Pre-commit secret scan. Enable once with: git config core.hooksPath .githooks
+# Requires gitleaks: https://github.com/gitleaks/gitleaks#installing
+set -euo pipefail
+
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact --config .gitleaks.toml; then
+    echo ""
+    echo "✖ gitleaks found a potential secret in your staged changes — commit aborted."
+    echo "  If it is a false positive, add it to the .gitleaks.toml allowlist."
+    exit 1
+  fi
+else
+  echo "⚠ gitleaks not installed — skipping local secret scan (CI will still scan on push)."
+  echo "  Install it to catch secrets BEFORE they are committed: https://github.com/gitleaks/gitleaks#installing"
+fi

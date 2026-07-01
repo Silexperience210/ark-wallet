@@ -1,0 +1,48 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Secrets — never commit real credentials
+.env
+.env.local
+.env.*.local
+!.env.example
+*.keystore
+*.jks
+tapd-defaults.json
+!tapd-defaults.example.json
+# credential material (macaroons, TLS, keys)
+*.macaroon
+*.cert
+*.pem
+*.key
+*.p12
+*.pfx
+*_SECRET*
+*.secret
+
+# Local toolchain caches / binary toolchains (keep out of Git; fetch in CI)
+tools/protoc/
+tools/android-openssl/
+
