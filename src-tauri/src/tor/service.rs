@@ -46,7 +46,12 @@ impl TorService {
 
         let state_dir = self.inner.data_dir.join("tor-state");
         let cache_dir = self.inner.data_dir.join("tor-cache");
-        log::info!("tor starting; data_dir={:?} state_dir={:?} cache_dir={:?}", self.inner.data_dir, state_dir, cache_dir);
+        log::info!(
+            "tor starting; data_dir={:?} state_dir={:?} cache_dir={:?}",
+            self.inner.data_dir,
+            state_dir,
+            cache_dir
+        );
 
         for dir in [&state_dir, &cache_dir] {
             if let Err(e) = std::fs::create_dir_all(dir) {

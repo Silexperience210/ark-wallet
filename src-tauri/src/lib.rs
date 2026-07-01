@@ -79,8 +79,7 @@ impl WalletState {
 pub fn run() {
     #[cfg(target_os = "android")]
     android_logger::init_once(
-        android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Debug),
+        android_logger::Config::default().with_max_level(log::LevelFilter::Debug),
     );
 
     #[allow(unused_mut)]

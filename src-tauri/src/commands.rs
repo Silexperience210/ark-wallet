@@ -556,7 +556,10 @@ pub async fn connect_tapd(
         return Err("tapd macaroon is required".into());
     }
 
-    log::info!("connect_tapd called; host={host} use_tor={use_tor} onion={}", host.trim().ends_with(".onion"));
+    log::info!(
+        "connect_tapd called; host={host} use_tor={use_tor} onion={}",
+        host.trim().ends_with(".onion")
+    );
 
     let config = taproot::TapdConfig {
         host: host.clone(),
@@ -741,7 +744,10 @@ pub async fn decode_taproot_addr(
 ) -> Result<taproot::DecodedAddrSummary, String> {
     let mut guard = state.taproot.lock().await;
     let client = guard.as_mut().ok_or("tapd not connected")?;
-    client.decode_addr(&address).await.map_err(|e| e.to_string())
+    client
+        .decode_addr(&address)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[command]
@@ -777,10 +783,7 @@ pub async fn list_universe_roots(
 }
 
 #[command]
-pub async fn sync_universe(
-    state: State<'_, WalletState>,
-    host: String,
-) -> Result<usize, String> {
+pub async fn sync_universe(state: State<'_, WalletState>, host: String) -> Result<usize, String> {
     let mut guard = state.taproot.lock().await;
     let client = guard.as_mut().ok_or("tapd not connected")?;
     client.universe_sync(&host).await.map_err(|e| e.to_string())
@@ -878,7 +881,14 @@ pub async fn mint_taproot_asset(
     let mut guard = state.taproot.lock().await;
     let client = guard.as_mut().ok_or("tapd not connected")?;
     client
-        .mint_asset(&name, amount, &metadata, collectible, new_group, fee_rate_sat_vb)
+        .mint_asset(
+            &name,
+            amount,
+            &metadata,
+            collectible,
+            new_group,
+            fee_rate_sat_vb,
+        )
         .await
         .map_err(|e| e.to_string())
 }

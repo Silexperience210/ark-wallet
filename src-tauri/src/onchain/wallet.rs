@@ -162,10 +162,7 @@ pub async fn get_balance(wallet: &SharedWallet) -> Result<bdk_wallet::Balance, O
 /// not make the wallet inoperant.
 pub fn esplora_endpoints(network: Network) -> Vec<&'static str> {
     match network {
-        Network::Bitcoin => vec![
-            "https://blockstream.info/api",
-            "https://mempool.space/api",
-        ],
+        Network::Bitcoin => vec!["https://blockstream.info/api", "https://mempool.space/api"],
         Network::Testnet => vec![
             "https://blockstream.info/testnet/api",
             "https://mempool.space/testnet/api",

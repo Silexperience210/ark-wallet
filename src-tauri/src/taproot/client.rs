@@ -5,12 +5,12 @@ use std::time::{Duration, Instant};
 use crate::tor::{ArtiConnector, TorService};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use tauri::{AppHandle, Emitter, Manager};
-use zeroize::Zeroizing;
 use tonic::{
     service::{interceptor::InterceptedService, Interceptor},
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
     Request, Status,
 };
+use zeroize::Zeroizing;
 
 pub const TAPD_MACAROON_KEY: &str = "tapd_macaroon";
 
@@ -686,8 +686,7 @@ impl TaprootClient {
                 let b = vb.batch?;
                 let state = format!(
                     "{:?}",
-                    mintrpc::BatchState::try_from(b.state)
-                        .unwrap_or(mintrpc::BatchState::Unknown)
+                    mintrpc::BatchState::try_from(b.state).unwrap_or(mintrpc::BatchState::Unknown)
                 );
                 Some(BatchSummary {
                     batch_key: hex::encode(&b.batch_key),
@@ -743,7 +742,11 @@ impl TaprootClient {
             .events
             .into_iter()
             .map(|e| {
-                let addr = e.addr.as_ref().map(|a| a.encoded.clone()).unwrap_or_default();
+                let addr = e
+                    .addr
+                    .as_ref()
+                    .map(|a| a.encoded.clone())
+                    .unwrap_or_default();
                 let status = format!(
                     "{:?}",
                     taprpc::AddrEventStatus::try_from(e.status)
@@ -1322,9 +1325,8 @@ pub async fn reconnect_tapd_bg(
 
     let config = match load_tapd_config(&app_handle)? {
         Some(mut c) => {
-            c.macaroon_hex =
-                crate::wallet::load_secret(&app_handle, &password, TAPD_MACAROON_KEY)
-                    .map_err(|e| e.to_string())?;
+            c.macaroon_hex = crate::wallet::load_secret(&app_handle, &password, TAPD_MACAROON_KEY)
+                .map_err(|e| e.to_string())?;
             c
         }
         None => {

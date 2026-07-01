@@ -68,7 +68,9 @@ fn inject_tapd_defaults() {
     }
 
     // Read the first candidate that exists and parse it leniently.
-    let json_text = candidates.iter().find_map(|p| std::fs::read_to_string(p).ok());
+    let json_text = candidates
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok());
     let parsed: serde_json::Value = match &json_text {
         Some(text) => serde_json::from_str(text).unwrap_or_else(|e| {
             println!("cargo:warning=tapd-defaults.json is present but not valid JSON: {e}");
@@ -101,7 +103,9 @@ fn inject_tapd_defaults() {
         // "\n"; `tapd_defaults.rs` restores them at runtime for the cert via
         // `.replace("\\n", "\n")`. Host and macaroon never contain newlines.
         let encoded = if env_key == "OZARK_DEFAULT_TAPD_CERT" {
-            raw.replace("\r\n", "\n").replace('\r', "\n").replace('\n', "\\n")
+            raw.replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .replace('\n', "\\n")
         } else {
             raw.trim().to_string()
         };
