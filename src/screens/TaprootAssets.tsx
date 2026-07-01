@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { motion } from "framer-motion";
 import { useNotification } from "../contexts/NotificationContext";
 import { useI18n } from "../i18n/I18nContext";
 import { PasswordPrompt } from "../components/PasswordPrompt";
+import { QRImage } from "../components/QRImage";
+import { scanQrCode } from "../lib/scan";
 import {
   ArrowLeft,
   RefreshCw,
@@ -16,6 +18,15 @@ import {
   Link,
   Download,
   ShieldCheck,
+  Wallet,
+  Zap,
+  Activity,
+  Settings,
+  Flame,
+  ScanLine,
+  ArrowDownLeft,
+  ArrowUpRight,
+  X,
 } from "lucide-react";
 
 interface TaprootAssetsProps {
@@ -35,12 +46,6 @@ interface ProofBackup {
   name: string;
   amount: number;
   proof_base64: string;
-}
-
-interface AssetBalance {
-  asset_id: string;
-  name: string;
-  balance: number;
 }
 
 interface Transfer {
@@ -129,6 +134,8 @@ interface BackgroundInit {
   tapd: TaskState;
 }
 
+type Tab = "portfolio" | "receive" | "send" | "ln" | "activity" | "advanced";
+
 function fmtAmount(amount: number, decimals: number): string {
   if (!decimals) return amount.toLocaleString();
   return (amount / Math.pow(10, decimals)).toLocaleString(undefined, {
@@ -136,6 +143,13 @@ function fmtAmount(amount: number, decimals: number): string {
     maximumFractionDigits: decimals,
   });
 }
+
+const inner: CSSProperties = {
+  background: "rgba(0,0,0,0.3)",
+  border: "1px solid var(--border)",
+  borderRadius: 12,
+  padding: 12,
+};
 
 export function TaprootAssets({ onBack }: TaprootAssetsProps) {
   const { t } = useI18n();
@@ -181,14 +195,11 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
   const [decoded, setDecoded] = useState<DecodedAddr | null>(null);
 
   // Extra tapd data
-  const [balances, setBalances] = useState<AssetBalance[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [burns, setBurns] = useState<Burn[]>([]);
   const [receives, setReceives] = useState<AddrReceive[]>([]);
   const [nodeInfo, setNodeInfo] = useState<NodeInfo | null>(null);
-  const [burnId, setBurnId] = useState("");
-  const [burnAmt, setBurnAmt] = useState("");
   const [metas, setMetas] = useState<Record<string, AssetMeta>>({});
   const [universeStats, setUniverseStats] = useState<UniverseStats | null>(null);
   const [universeRoots, setUniverseRoots] = useState<UniverseRoot[]>([]);
@@ -206,9 +217,19 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
   const [chanAmount, setChanAmount] = useState("");
   const [chanFee, setChanFee] = useState("");
 
+  // UI: tabbed navigation, mint sheet, burn confirmation modal
+  const [tab, setTab] = useState<Tab>("portfolio");
+  const [mintOpen, setMintOpen] = useState(false);
+  const [burnTarget, setBurnTarget] = useState<AssetSummary | null>(null);
+  const [burnModalAmt, setBurnModalAmt] = useState("");
+
   const decimalById: Record<string, number> = {};
   assets.forEach((a) => {
     decimalById[a.asset_id] = a.decimal_display;
+  });
+  const nameById: Record<string, string> = {};
+  assets.forEach((a) => {
+    nameById[a.asset_id] = a.name;
   });
 
   useEffect(() => {
@@ -302,6 +323,13 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
     };
   }, []);
 
+  // Auto-select the only asset for Lightning flows so the user never pastes a hex id.
+  useEffect(() => {
+    if (connected && !lnAssetId && assets.length === 1) {
+      setLnAssetId(assets[0].asset_id);
+    }
+  }, [connected, assets, lnAssetId]);
+
   async function loadTorConfig() {
     try {
       const cfg = await invoke<{ enabled: boolean; force_tor: boolean }>("load_tor_config");
@@ -366,6 +394,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
     setError("");
     setConnected(false);
     setAutoConnecting(false);
+    setTab("portfolio");
   }
 
   function connect() {
@@ -412,7 +441,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
   }
 
   async function mint() {
-    if (!mintName || !mintAmount) return;
+    if (!mintName || (!mintCollectible && !mintAmount)) return;
     setLoading(true);
     setError("");
     try {
@@ -428,6 +457,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
       setMintName("");
       setMintAmount("");
       setMintMeta("");
+      setMintOpen(false);
       await fetchAssets();
       await fetchBatches();
     } catch (e) {
@@ -477,16 +507,15 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
     }
   }
 
-  function copyAddress() {
-    if (!address) return;
-    navigator.clipboard.writeText(address);
+  function copyText(text: string) {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
     notify(t("notifications.addressCopied"), "success");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
 
   async function fetchExtras() {
-    try { setBalances(await invoke<AssetBalance[]>("list_taproot_balances")); } catch {}
     try { setTransfers(await invoke<Transfer[]>("list_taproot_transfers")); } catch {}
     try { setBatches(await invoke<Batch[]>("list_taproot_batches")); } catch {}
     try { setBurns(await invoke<Burn[]>("list_taproot_burns")); } catch {}
@@ -524,6 +553,8 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
         peerPubkey: lnPeer,
       });
       notify(`Paiement: ${status}`, status === "Succeeded" ? "success" : "error");
+      setLnPayReq("");
+      setLnDecoded(null);
       await fetchAssets();
     } catch (e) {
       setError(String(e));
@@ -702,704 +733,533 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
     }
   }
 
-  return (
+  // --- UI helpers -----------------------------------------------------------
+
+  async function scanInto(setter: (v: string) => void) {
+    const content = await scanQrCode();
+    if (content) setter(content.trim());
+  }
+
+  function receiveAsset(a: AssetSummary) {
+    setAddrAssetId(a.asset_id);
+    setAddress("");
+    setTab("receive");
+  }
+
+  function openBurn(a: AssetSummary) {
+    setBurnTarget(a);
+    setBurnModalAmt(String(a.amount));
+  }
+
+  async function confirmBurn() {
+    if (!burnTarget) return;
+    const amt = Number(burnModalAmt);
+    setBurnTarget(null);
+    if (amt > 0) await burnAsset(burnTarget.asset_id, amt);
+  }
+
+  const assetBadge = (name: string) => (name || "?").trim().charAt(0).toUpperCase();
+
+  const TABS: { id: Tab; label: string; Icon: typeof Wallet }[] = [
+    { id: "portfolio", label: "Actifs", Icon: Wallet },
+    { id: "receive", label: "Recevoir", Icon: ArrowDownLeft },
+    { id: "send", label: "Envoyer", Icon: ArrowUpRight },
+    { id: "ln", label: "Lightning", Icon: Zap },
+    { id: "activity", label: "Activité", Icon: Activity },
+  ];
+
+  const errorBox = error ? (
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        padding: "24px",
-        overflow: "auto",
+        marginBottom: 16,
+        padding: 12,
+        borderRadius: 10,
+        background: "rgba(239,68,68,0.1)",
+        border: "1px solid var(--danger)",
+        color: "var(--danger)",
+        fontSize: 13,
+        wordBreak: "break-word",
+        whiteSpace: "pre-wrap",
       }}
     >
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "24px",
-        }}
-      >
-        <div>
-          <h1 className="title-lg">{t("taproot.title")}</h1>
-          <p className="text-muted">{t("taproot.subtitle")}</p>
-        </div>
-        <div style={{ display: "flex", gap: "8px" }}>
-          {connected && (
-            <button className="btn btn-ghost" onClick={changeNode}>
-              Changer de nœud
-            </button>
-          )}
-          <button className="btn btn-ghost" onClick={onBack}>
-            <ArrowLeft size={18} /> {t("back")}
-          </button>
-        </div>
-      </motion.div>
+      {error}
+    </div>
+  ) : null;
 
-      {!connected ? (
-        autoConnecting ? (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="glass-card"
-            style={{ padding: "32px", marginBottom: "20px", textAlign: "center" }}
-          >
-            <span className="spinner" />
-            <div className="text-secondary" style={{ marginTop: "14px" }}>
-              {connectStatus || "Connexion au nœud tapd..."}
-            </div>
-            <div className="text-muted" style={{ fontSize: "12px", marginTop: "6px" }}>
-              Premier démarrage de Tor : 30–60 s possibles.
-            </div>
-            <div className="text-muted" style={{ fontSize: "12px", marginTop: "4px" }}>
-              {t("taproot.torStatus")}: {torStatus}
-            </div>
-          </motion.div>
-        ) : (
+  // --- Render: not connected -----------------------------------------------
+
+  function renderConnect() {
+    if (autoConnecting) {
+      return (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="glass-card"
-          style={{ padding: "24px", marginBottom: "20px" }}
+          style={{ padding: 32, marginBottom: 20, textAlign: "center" }}
         >
-          <div className="text-secondary" style={{ marginBottom: "16px" }}>
-            <Link size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-            {t("taproot.connect")}
+          <span className="spinner" />
+          <div className="text-secondary" style={{ marginTop: 14 }}>
+            {connectStatus || "Connexion au nœud tapd..."}
           </div>
-          <input
-            className="input"
-            placeholder={t("taproot.host")}
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            style={{ marginBottom: "12px" }}
-          />
-          <textarea
-            className="input"
-            placeholder={t("taproot.cert")}
-            value={cert}
-            onChange={(e) => setCert(e.target.value)}
-            rows={4}
-            style={{ marginBottom: "12px" }}
-          />
-          <input
-            className="input"
-            placeholder={t("taproot.macaroon")}
-            value={macaroon}
-            onChange={(e) => setMacaroon(e.target.value)}
-            style={{ marginBottom: "12px" }}
-          />
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={useTor}
-                onChange={(e) => setUseTor(e.target.checked)}
-              />
-              {t("taproot.useTor")}
-            </label>
-            <span className="text-muted" style={{ fontSize: "12px" }}>
-              {t("taproot.torStatus")}: {torStatus}
-            </span>
+          <div className="text-muted" style={{ fontSize: 12, marginTop: 6 }}>
+            Premier démarrage de Tor : 30–60 s possibles.
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "16px", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={forceTor}
-              onChange={(e) => setForceTor(e.target.checked)}
-            />
-            {t("taproot.forceTor")}
-          </label>
-          {error && (
-            <div
-              style={{
-                marginBottom: "16px",
-                padding: "12px",
-                borderRadius: "10px",
-                background: "rgba(255,68,68,0.1)",
-                border: "1px solid var(--error)",
-                color: "var(--error)",
-                fontSize: "13px",
-                wordBreak: "break-word",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {error}
-            </div>
-          )}
-          <div style={{ display: "flex", gap: "10px", marginBottom: "16px" }}>
-            {hasDefaults && (
-              <button className="btn btn-ghost" onClick={connectDefaultNode} disabled={loading}>
-                {t("taproot.defaultNode")}
-              </button>
-            )}
+          <div className="text-muted" style={{ fontSize: 12, marginTop: 4 }}>
+            {t("taproot.torStatus")}: {torStatus}
           </div>
-          <button className="btn btn-primary" onClick={connect} disabled={loading}>
-            {loading ? <span className="spinner" /> : <Link size={18} />}
-            {loading ? t("loading") : t("taproot.connect")}
-          </button>
         </motion.div>
-        )
-      ) : (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="glass-card"
-            style={{ padding: "20px", marginBottom: "20px" }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "12px",
-              }}
-            >
-              <span className="text-secondary">
-                {t("taproot.assets")} ({assets.length})
-              </span>
-              <button className="btn btn-ghost" onClick={fetchAssets} disabled={loading}>
-                <RefreshCw size={16} /> {t("refresh")}
-              </button>
-            </div>
-            {assets.length === 0 ? (
-              <div className="text-muted">{t("taproot.noAssets")}</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                {assets.map((a) => (
-                  <div
-                    key={a.asset_id}
-                    style={{
-                      padding: "12px",
-                      background: "rgba(0,0,0,0.2)",
-                      borderRadius: "10px",
-                      border: "1px solid var(--border)",
-                    }}
-                  >
-                    <div style={{ fontWeight: 600 }}>{a.name}</div>
-                    <div className="text-muted" style={{ fontSize: "12px" }}>
-                      {fmtAmount(a.amount, a.decimal_display)} {t("taproot.units")} · {a.asset_type}
-                    </div>
-                    <div
-                      className="text-muted"
-                      style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}
-                    >
-                      {a.asset_id}
-                    </div>
-                    <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-                      <button className="btn btn-ghost" onClick={() => showMeta(a.asset_id)}>
-                        Meta
-                      </button>
-                      <button className="btn btn-ghost" onClick={() => burnAsset(a.asset_id, a.amount)} disabled={loading}>
-                        Burn
-                      </button>
-                    </div>
-                    {metas[a.asset_id] && (
-                      <div className="text-muted" style={{ fontSize: "11px", marginTop: "6px", wordBreak: "break-all" }}>
-                        {metas[a.asset_id].meta_type}: {metas[a.asset_id].data || "(vide)"}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </motion.div>
+      );
+    }
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="glass-card"
+        style={{ padding: 24, marginBottom: 20 }}
+      >
+        <div className="text-secondary" style={{ marginBottom: 16 }}>
+          <Link size={16} style={{ marginRight: 8, verticalAlign: "middle" }} />
+          {t("taproot.connect")}
+        </div>
+        <input className="input" placeholder={t("taproot.host")} value={host} onChange={(e) => setHost(e.target.value)} style={{ marginBottom: 12 }} />
+        <textarea className="input" placeholder={t("taproot.cert")} value={cert} onChange={(e) => setCert(e.target.value)} rows={4} style={{ marginBottom: 12 }} />
+        <input className="input" placeholder={t("taproot.macaroon")} value={macaroon} onChange={(e) => setMacaroon(e.target.value)} style={{ marginBottom: 12 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="checkbox" checked={useTor} onChange={(e) => setUseTor(e.target.checked)} />
+            {t("taproot.useTor")}
+          </label>
+          <span className="text-muted" style={{ fontSize: 12 }}>{t("taproot.torStatus")}: {torStatus}</span>
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, cursor: "pointer" }}>
+          <input type="checkbox" checked={forceTor} onChange={(e) => setForceTor(e.target.checked)} />
+          {t("taproot.forceTor")}
+        </label>
+        {errorBox}
+        {hasDefaults && (
+          <button className="btn btn-ghost" onClick={connectDefaultNode} disabled={loading} style={{ marginBottom: 12, width: "100%" }}>
+            {t("taproot.defaultNode")}
+          </button>
+        )}
+        <button className="btn btn-primary" onClick={connect} disabled={loading} style={{ width: "100%" }}>
+          {loading ? <span className="spinner" /> : <Link size={18} />}
+          {loading ? t("loading") : t("taproot.connect")}
+        </button>
+      </motion.div>
+    );
+  }
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.1 }}
-            className="glass-card"
-            style={{ padding: "20px", marginBottom: "20px" }}
-          >
-            <div className="text-secondary" style={{ marginBottom: "12px" }}>
-              <Plus size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-              {t("taproot.mint")}
-            </div>
-            <input
-              className="input"
-              placeholder={t("taproot.mintName")}
-              value={mintName}
-              onChange={(e) => setMintName(e.target.value)}
-              style={{ marginBottom: "10px" }}
-            />
-            <input
-              className="input"
-              placeholder={t("taproot.mintSupply")}
-              type="number"
-              value={mintAmount}
-              onChange={(e) => setMintAmount(e.target.value)}
-              style={{ marginBottom: "10px" }}
-            />
-            <input
-              className="input"
-              placeholder={t("taproot.mintMetadata")}
-              value={mintMeta}
-              onChange={(e) => setMintMeta(e.target.value)}
-              style={{ marginBottom: "12px" }}
-            />
-            <div style={{ display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "10px" }}>
-              <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={mintCollectible}
-                  onChange={(e) => setMintCollectible(e.target.checked)}
-                />
-                Collectible (NFT)
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={mintNewGroup}
-                  onChange={(e) => setMintNewGroup(e.target.checked)}
-                />
-                Nouveau groupe
-              </label>
-            </div>
-            <input
-              className="input"
-              placeholder="Frais sat/vB (0 = auto)"
-              type="number"
-              value={mintFee}
-              onChange={(e) => setMintFee(e.target.value)}
-              style={{ marginBottom: "12px" }}
-            />
-            <button
-              className="btn btn-primary"
-              onClick={mint}
-              disabled={loading || !mintName || (!mintCollectible && !mintAmount)}
-            >
-              <Plus size={16} /> {t("taproot.mint")}
-            </button>
-          </motion.div>
+  // --- Render: tabs --------------------------------------------------------
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.15 }}
-            className="glass-card"
-            style={{ padding: "20px", marginBottom: "20px" }}
-          >
-            <div className="text-secondary" style={{ marginBottom: "12px" }}>
-              <QrCode size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-              {t("taproot.newAddress")}
-            </div>
-            <input
-              className="input"
-              placeholder={t("taproot.assetId")}
-              value={addrAssetId}
-              onChange={(e) => setAddrAssetId(e.target.value)}
-              style={{ marginBottom: "10px" }}
-            />
-            <input
-              className="input"
-              placeholder={t("taproot.amount")}
-              type="number"
-              value={addrAmount}
-              onChange={(e) => setAddrAmount(e.target.value)}
-              style={{ marginBottom: "12px" }}
-            />
-            <button
-              className="btn btn-secondary"
-              onClick={newAddress}
-              disabled={loading || !addrAssetId || !addrAmount}
-            >
-              <QrCode size={16} /> {t("taproot.newAddress")}
-            </button>
-            {address && (
-              <div
-                style={{
-                  marginTop: "12px",
-                  padding: "12px",
-                  background: "rgba(0,0,0,0.2)",
-                  borderRadius: "10px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "10px",
-                  wordBreak: "break-all",
-                }}
-              >
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", flex: 1 }}>{address}</span>
-                <button className="btn btn-ghost" onClick={copyAddress}>
-                  {copied ? <Check size={16} /> : <Copy size={16} />}
-                </button>
-              </div>
-            )}
-          </motion.div>
+  function renderHero() {
+    return (
+      <div
+        className="glass-card"
+        style={{
+          padding: 20,
+          marginBottom: 16,
+          background: "linear-gradient(135deg, rgba(0,240,255,0.12), rgba(168,85,247,0.06))",
+          borderColor: "rgba(0,240,255,0.2)",
+        }}
+      >
+        <div className="text-muted" style={{ fontSize: 12 }}>Portefeuille Taproot</div>
+        <div className="title-lg" style={{ marginTop: 4 }}>
+          {assets.length} <span className="text-muted" style={{ fontSize: 15 }}>asset{assets.length > 1 ? "s" : ""}</span>
+        </div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 12 }} className="text-muted">
+          {nodeInfo && <span>Réseau : <b style={{ color: "var(--accent-cyan)" }}>{nodeInfo.network}</b></span>}
+          {universeStats && <span>Universe : <b style={{ color: "var(--accent-cyan)" }}>{universeStats.num_assets}</b></span>}
+        </div>
+      </div>
+    );
+  }
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2 }}
-            className="glass-card"
-            style={{ padding: "20px", marginBottom: "20px" }}
-          >
-            <div className="text-secondary" style={{ marginBottom: "12px" }}>
-              <Send size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-              {t("taproot.send")}
-            </div>
-            <input
-              className="input"
-              placeholder="Taproot Asset address"
-              value={sendAddress}
-              onChange={(e) => {
-                setSendAddress(e.target.value);
-                setDecoded(null);
-              }}
-              style={{ marginBottom: "12px" }}
-            />
-            <input
-              className="input"
-              placeholder="Frais sat/vB (0 = auto)"
-              type="number"
-              value={sendFee}
-              onChange={(e) => setSendFee(e.target.value)}
-              style={{ marginBottom: "12px" }}
-            />
-            {decoded && (
-              <div
-                style={{
-                  marginBottom: "12px",
-                  padding: "12px",
-                  background: "rgba(0,0,0,0.2)",
-                  borderRadius: "10px",
-                  fontSize: "12px",
-                }}
-              >
-                <div style={{ wordBreak: "break-all", fontFamily: "var(--font-mono)" }}>
-                  {decoded.asset_id}
+  function renderPortfolio() {
+    return (
+      <>
+        {renderHero()}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "2px 4px 12px" }}>
+          <span className="text-secondary" style={{ fontWeight: 600 }}>{t("taproot.assets")} ({assets.length})</span>
+          <button className="btn btn-ghost" onClick={fetchAssets} disabled={loading}><RefreshCw size={16} /> {t("refresh")}</button>
+        </div>
+        {assets.length === 0 ? (
+          <div className="glass-card" style={{ padding: 20 }}><div className="text-muted">{t("taproot.noAssets")}</div></div>
+        ) : (
+          assets.map((a) => (
+            <div key={a.asset_id} className="glass-card" style={{ padding: 14, marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 12, flex: "none", display: "grid", placeItems: "center", fontWeight: 800, color: "#000", background: "linear-gradient(135deg, var(--accent-cyan), var(--accent-purple))" }}>{assetBadge(a.name)}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700 }}>{a.name || "(sans nom)"}</div>
+                  <div className="text-muted" style={{ fontSize: 11 }}>{a.asset_type}{a.decimal_display ? ` · ${a.decimal_display} déc.` : ""}</div>
                 </div>
-                <div className="text-muted">
-                  {decoded.amount.toLocaleString()} · {decoded.asset_type}
-                </div>
+                <div style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmtAmount(a.amount, a.decimal_display)}</div>
               </div>
-            )}
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button className="btn btn-ghost" onClick={decodeAddrForSend} disabled={loading || !sendAddress}>
-                Décoder
-              </button>
-              <button className="btn btn-primary" onClick={send} disabled={loading || !sendAddress}>
-                <Send size={16} /> {t("taproot.send")}
-              </button>
-            </div>
-            {sendTxid && (
-              <div className="text-muted" style={{ marginTop: "12px", fontSize: "12px", wordBreak: "break-all" }}>
-                TX: {sendTxid}
-              </div>
-            )}
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.25 }}
-            className="glass-card"
-            style={{ padding: "20px", marginBottom: "20px" }}
-          >
-            <div className="text-secondary" style={{ marginBottom: "12px" }}>
-              <Download size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-              {t("taproot.proofBackup")}
-            </div>
-            <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
-              <button
-                className="btn btn-secondary"
-                onClick={exportProofs}
-                disabled={proofLoading}
-              >
-                {proofLoading ? <span className="spinner" /> : <Download size={16} />}
-                {t("taproot.exportProofs")}
-              </button>
-              {proofs.length > 0 && (
-                <button className="btn btn-ghost" onClick={downloadProofs}>
-                  <Download size={16} /> {t("backup.download")}
-                </button>
+              <div className="text-muted" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)", wordBreak: "break-all", marginTop: 8 }}>{a.asset_id}</div>
+              {metas[a.asset_id] && (
+                <div className="text-muted" style={{ fontSize: 11, marginTop: 6, wordBreak: "break-all" }}>{metas[a.asset_id].meta_type}: {metas[a.asset_id].data || "(vide)"}</div>
               )}
-            </div>
-            {proofs.length === 0 ? (
-              <div className="text-muted">{t("taproot.noProofs")}</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                {proofs.map((p) => (
-                  <div
-                    key={p.asset_id}
-                    style={{
-                      padding: "12px",
-                      background: "rgba(0,0,0,0.2)",
-                      borderRadius: "10px",
-                      border: "1px solid var(--border)",
-                    }}
-                  >
-                    <div style={{ fontWeight: 600 }}>{p.name}</div>
-                    <div className="text-muted" style={{ fontSize: "12px" }}>
-                      {p.amount.toLocaleString()} {t("taproot.units")}
-                    </div>
-                    <div
-                      className="text-muted"
-                      style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}
-                    >
-                      {p.asset_id}
-                    </div>
-                  </div>
-                ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 11 }}>
+                <button className="btn btn-secondary" style={{ flex: 1, padding: "8px" }} onClick={() => receiveAsset(a)}><ArrowDownLeft size={15} /> Recevoir</button>
+                <button className="btn btn-secondary" style={{ flex: 1, padding: "8px" }} onClick={() => setTab("send")}><ArrowUpRight size={15} /> Envoyer</button>
+                <button className="btn btn-ghost" style={{ padding: "8px 10px" }} onClick={() => showMeta(a.asset_id)} title="Métadonnées"><QrCode size={15} /></button>
+                <button className="btn btn-ghost" style={{ padding: "8px 10px", color: "var(--danger)" }} onClick={() => openBurn(a)} title="Détruire"><Flame size={15} /></button>
               </div>
-            )}
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3 }}
-            className="glass-card"
-            style={{ padding: "20px", marginBottom: "20px" }}
-          >
-            <div className="text-secondary" style={{ marginBottom: "12px" }}>
-              <ShieldCheck size={16} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-              {t("taproot.verifyProof")}
             </div>
-            <textarea
-              className="input"
-              placeholder={t("taproot.proofPlaceholder")}
-              value={proofText}
-              onChange={(e) => setProofText(e.target.value)}
-              rows={4}
-              style={{ marginBottom: "12px" }}
-            />
-            <button
-              className="btn btn-secondary"
-              onClick={verifyProof}
-              disabled={proofLoading || !proofText}
-            >
-              {proofLoading ? <span className="spinner" /> : <ShieldCheck size={16} />}
-              {t("taproot.verify")}
-            </button>
-            {verifyResult !== null && (
-              <div
-                style={{
-                  marginTop: "12px",
-                  padding: "12px",
-                  borderRadius: "10px",
-                  background: verifyResult ? "rgba(0,255,136,0.1)" : "rgba(255,68,68,0.1)",
-                  border: `1px solid ${verifyResult ? "var(--success)" : "var(--error)"}`,
-                  color: verifyResult ? "var(--success)" : "var(--error)",
-                }}
-              >
-                {verifyResult ? t("taproot.proofValid") : t("taproot.proofInvalid")}
+          ))
+        )}
+      </>
+    );
+  }
+
+  const assetSelect = (value: string, onChange: (v: string) => void) => (
+    <select className="input" value={value} onChange={(e) => onChange(e.target.value)} style={{ marginBottom: 11 }}>
+      <option value="">— choisir un asset —</option>
+      {assets.map((a) => (
+        <option key={a.asset_id} value={a.asset_id}>{a.name || a.asset_id.slice(0, 10)} — {fmtAmount(a.amount, a.decimal_display)}</option>
+      ))}
+    </select>
+  );
+
+  function renderReceive() {
+    return (
+      <>
+        <div className="title-lg" style={{ margin: "6px 0 14px" }}>Recevoir</div>
+        <div className="glass-card" style={{ padding: 20 }}>
+          <label className="text-muted" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>Asset à recevoir</label>
+          {assetSelect(addrAssetId, (v) => { setAddrAssetId(v); setAddress(""); })}
+          <label className="text-muted" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>{t("taproot.amount")}</label>
+          <input className="input" type="number" value={addrAmount} onChange={(e) => setAddrAmount(e.target.value)} style={{ marginBottom: 12 }} />
+          <button className="btn btn-primary" onClick={newAddress} disabled={loading || !addrAssetId || !addrAmount} style={{ width: "100%" }}>
+            {loading ? <span className="spinner" /> : <QrCode size={16} />} Générer l'adresse
+          </button>
+          {address && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginTop: 16 }}>
+              <QRImage value={address} />
+              <div style={{ display: "flex", gap: 8, alignItems: "center", ...inner, width: "100%" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, flex: 1, wordBreak: "break-all" }}>{address}</span>
+                <button className="btn btn-ghost" onClick={() => copyText(address)}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
               </div>
-            )}
-          </motion.div>
-
-          {/* Soldes */}
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-              <span className="text-secondary">Soldes ({balances.length})</span>
-              <button className="btn btn-ghost" onClick={fetchExtras} disabled={loading}>
-                <RefreshCw size={16} /> {t("refresh")}
-              </button>
+              <div className="text-muted" style={{ fontSize: 11 }}>Adresse Taproot Asset · usage unique</div>
             </div>
-            {balances.length === 0 ? (
-              <div className="text-muted">Aucun solde</div>
-            ) : (
-              balances.map((b) => (
-                <div key={b.asset_id} style={{ padding: "10px", background: "rgba(0,0,0,0.2)", borderRadius: "10px", marginBottom: "8px" }}>
-                  <div style={{ fontWeight: 600 }}>{(b.name || "(sans nom)") + " — " + fmtAmount(b.balance, decimalById[b.asset_id] || 0)}</div>
-                  <div className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{b.asset_id}</div>
-                </div>
-              ))
-            )}
-          </motion.div>
-
-          {/* Mints en attente */}
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-              <span className="text-secondary">Mints / batches ({batches.length})</span>
-              <button className="btn btn-ghost" onClick={fetchBatches} disabled={loading}>
-                <RefreshCw size={16} /> {t("refresh")}
-              </button>
-            </div>
-            {batches.length === 0 ? (
-              <div className="text-muted">Aucun batch</div>
-            ) : (
-              batches.map((b) => (
-                <div key={b.batch_key} style={{ padding: "10px", background: "rgba(0,0,0,0.2)", borderRadius: "10px", marginBottom: "8px" }}>
-                  <div style={{ fontWeight: 600 }}>{b.state} · {b.assets} asset(s)</div>
-                  {b.batch_txid && (
-                    <div className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>tx: {b.batch_txid}</div>
-                  )}
-                  <div className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{b.batch_key}</div>
-                </div>
-              ))
-            )}
-            <button className="btn btn-ghost" onClick={cancelBatch} disabled={loading} style={{ marginTop: "8px" }}>
-              Annuler le batch en attente
-            </button>
-          </motion.div>
-
-          {/* Historique des transferts */}
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-              <span className="text-secondary">Historique transferts ({transfers.length})</span>
-              <button className="btn btn-ghost" onClick={fetchTransfers} disabled={loading}>
-                <RefreshCw size={16} /> {t("refresh")}
-              </button>
-            </div>
-            {transfers.length === 0 ? (
-              <div className="text-muted">Aucun transfert</div>
-            ) : (
-              transfers.map((tr) => (
-                <div key={tr.anchor_txid + tr.timestamp} style={{ padding: "10px", background: "rgba(0,0,0,0.2)", borderRadius: "10px", marginBottom: "8px" }}>
-                  <div style={{ fontWeight: 600 }}>{tr.total_out.toLocaleString()} · {tr.inputs}→{tr.outputs}</div>
-                  <div className="text-muted" style={{ fontSize: "11px" }}>{new Date(tr.timestamp * 1000).toLocaleString()} · bloc ~{tr.height_hint}</div>
-                  <div className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{tr.anchor_txid}</div>
-                </div>
-              ))
-            )}
-          </motion.div>
-
-          {/* Réceptions entrantes */}
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-            <div className="text-secondary" style={{ marginBottom: "12px" }}>Réceptions ({receives.length})</div>
-            {receives.length === 0 ? (
-              <div className="text-muted">Aucune réception</div>
-            ) : (
-              receives.map((r, i) => (
-                <div key={r.outpoint + i} style={{ padding: "10px", background: "rgba(0,0,0,0.2)", borderRadius: "10px", marginBottom: "8px" }}>
-                  <div style={{ fontWeight: 600 }}>{r.status}</div>
-                  <div className="text-muted" style={{ fontSize: "11px" }}>{new Date(r.timestamp * 1000).toLocaleString()} · {r.utxo_amt_sat.toLocaleString()} sat</div>
-                  <div className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{r.outpoint}</div>
-                </div>
-              ))
-            )}
-          </motion.div>
-
-          {/* Burn */}
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-            <div className="text-secondary" style={{ marginBottom: "12px" }}>Détruire (burn) — {burns.length} burn(s)</div>
-            <input className="input" placeholder="Asset ID" value={burnId} onChange={(e) => setBurnId(e.target.value)} style={{ marginBottom: "10px" }} />
-            <input className="input" placeholder="Montant à brûler" type="number" value={burnAmt} onChange={(e) => setBurnAmt(e.target.value)} style={{ marginBottom: "12px" }} />
-            <button
-              className="btn btn-secondary"
-              onClick={() => burnAsset(burnId, Number(burnAmt))}
-              disabled={loading || !burnId || !burnAmt}
-            >
-              Brûler définitivement
-            </button>
-            {burns.length > 0 && (
-              <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                {burns.map((b, i) => (
-                  <div key={b.anchor_txid + i} className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>
-                    -{b.amount} · {b.asset_id}
-                  </div>
-                ))}
-              </div>
-            )}
-          </motion.div>
-
-          {/* Infos nœud */}
-          {nodeInfo && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-              <div className="text-secondary" style={{ marginBottom: "12px" }}>Nœud tapd</div>
-              <div className="text-muted" style={{ fontSize: "12px" }}>Réseau : {nodeInfo.network}</div>
-              <div className="text-muted" style={{ fontSize: "12px" }}>tapd : {nodeInfo.version}</div>
-              <div className="text-muted" style={{ fontSize: "12px" }}>lnd : {nodeInfo.lnd_version}</div>
-              <div className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{nodeInfo.lnd_pubkey}</div>
-            </motion.div>
           )}
+        </div>
+      </>
+    );
+  }
 
-          {/* Universe */}
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-              <span className="text-secondary">Universe</span>
-              <button className="btn btn-ghost" onClick={fetchExtras} disabled={loading}>
-                <RefreshCw size={16} /> {t("refresh")}
-              </button>
+  function renderSend() {
+    return (
+      <>
+        <div className="title-lg" style={{ margin: "6px 0 14px" }}>Envoyer</div>
+        <div className="glass-card" style={{ padding: 20 }}>
+          <label className="text-muted" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>Adresse Taproot Asset</label>
+          <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+            <input className="input" style={{ flex: 1 }} placeholder="taprt1…" value={sendAddress} onChange={(e) => { setSendAddress(e.target.value); setDecoded(null); }} />
+            <button className="btn btn-secondary" style={{ flex: "none", padding: "0 14px" }} onClick={() => scanInto((v) => { setSendAddress(v); setDecoded(null); })}><ScanLine size={18} /></button>
+          </div>
+          {decoded && (
+            <div style={{ ...inner, marginBottom: 12 }}>
+              <div style={{ fontWeight: 600 }}>{nameById[decoded.asset_id] || "Asset"} · {decoded.amount.toLocaleString()}</div>
+              <div className="text-muted" style={{ fontSize: 11, fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{decoded.asset_id}</div>
             </div>
-            {universeStats && (
-              <div className="text-muted" style={{ fontSize: "12px", marginBottom: "10px" }}>
-                {universeStats.num_assets} assets · {universeStats.num_groups} groupes · {universeStats.num_syncs} syncs · {universeStats.num_proofs} preuves
+          )}
+          <label className="text-muted" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>Frais (sat/vB · 0 = auto)</label>
+          <input className="input" type="number" placeholder="0" value={sendFee} onChange={(e) => setSendFee(e.target.value)} style={{ marginBottom: 12 }} />
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={decodeAddrForSend} disabled={loading || !sendAddress}>Décoder</button>
+            <button className="btn btn-primary" style={{ flex: 1 }} onClick={send} disabled={loading || !sendAddress}>{loading ? <span className="spinner" /> : <Send size={16} />} {t("taproot.send")}</button>
+          </div>
+          {sendTxid && <div className="text-muted" style={{ marginTop: 12, fontSize: 12, wordBreak: "break-all" }}>TX: {sendTxid}</div>}
+        </div>
+      </>
+    );
+  }
+
+  function renderLightning() {
+    return (
+      <>
+        <div className="title-lg" style={{ margin: "6px 0 6px" }}><Zap size={20} style={{ verticalAlign: "middle" }} /> Lightning</div>
+        {assets.length > 1 && (
+          <div className="glass-card" style={{ padding: 14, marginBottom: 14 }}>
+            <label className="text-muted" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>Asset Lightning</label>
+            {assetSelect(lnAssetId, setLnAssetId)}
+          </div>
+        )}
+
+        {/* PAY (primary) */}
+        <div className="glass-card" style={{ padding: 20, marginBottom: 14, borderColor: "rgba(0,240,255,0.22)" }}>
+          <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}><ArrowUpRight size={16} style={{ verticalAlign: "middle" }} /> Payer une invoice</div>
+          <button className="btn btn-primary" style={{ width: "100%", marginBottom: 12 }} onClick={() => scanInto((v) => { setLnPayReq(v); setLnDecoded(null); })}><ScanLine size={18} /> Scanner un QR</button>
+          <div className="text-muted" style={{ textAlign: "center", fontSize: 11, marginBottom: 10 }}>— ou colle une invoice —</div>
+          <input className="input" placeholder="lnbc…" value={lnPayReq} onChange={(e) => { setLnPayReq(e.target.value); setLnDecoded(null); }} style={{ marginBottom: 11 }} />
+          {lnDecoded && (
+            <div style={{ ...inner, marginBottom: 11, borderColor: "rgba(0,240,255,0.22)" }}>
+              <div style={{ fontWeight: 700 }}>{lnDecoded.asset_amount.toLocaleString()} {nameById[lnAssetId] || "asset"} <span className="text-muted" style={{ fontWeight: 400 }}>≈ {lnDecoded.sat_amount.toLocaleString()} sat</span></div>
+              <div className="text-muted" style={{ fontSize: 12 }}>{lnDecoded.description || "(sans description)"}</div>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={decodeLnInvoice} disabled={loading || !lnPayReq || !lnAssetId}>Décoder</button>
+            <button className="btn btn-primary" style={{ flex: 1 }} onClick={payLnInvoice} disabled={loading || !lnPayReq || !lnAssetId}>{loading ? <span className="spinner" /> : <Zap size={16} />} Payer</button>
+          </div>
+          <details style={{ marginTop: 12 }}>
+            <summary className="text-muted" style={{ fontSize: 11, cursor: "pointer" }}>Peer (avancé — auto-détection à venir)</summary>
+            <input className="input" placeholder="Peer pubkey (hex)" value={lnPeer} onChange={(e) => setLnPeer(e.target.value)} style={{ marginTop: 8 }} />
+          </details>
+        </div>
+
+        {/* RECEIVE */}
+        <div className="glass-card" style={{ padding: 20, marginBottom: 14 }}>
+          <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}><ArrowDownLeft size={16} style={{ verticalAlign: "middle" }} /> Recevoir en assets</div>
+          <input className="input" type="number" placeholder="Montant (assets)" value={lnRecvAmount} onChange={(e) => setLnRecvAmount(e.target.value)} style={{ marginBottom: 10 }} />
+          <input className="input" placeholder="Mémo (optionnel)" value={lnMemo} onChange={(e) => setLnMemo(e.target.value)} style={{ marginBottom: 10 }} />
+          <button className="btn btn-secondary" style={{ width: "100%" }} onClick={createLnInvoice} disabled={loading || !lnAssetId || !lnRecvAmount || !lnPeer}>Créer une invoice</button>
+          {lnBolt11 && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginTop: 14 }}>
+              <QRImage value={lnBolt11} />
+              <div style={{ display: "flex", gap: 8, alignItems: "center", ...inner, width: "100%" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, flex: 1, wordBreak: "break-all" }}>{lnBolt11}</span>
+                <button className="btn btn-ghost" onClick={() => copyText(lnBolt11)}><Copy size={16} /></button>
               </div>
-            )}
-            <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
-              <input
-                className="input"
-                placeholder="Universe host (ex: universe.lightning.finance:10029)"
-                value={syncHost}
-                onChange={(e) => setSyncHost(e.target.value)}
-              />
-              <button className="btn btn-secondary" onClick={doSyncUniverse} disabled={loading || !syncHost}>
-                Sync
-              </button>
             </div>
-            {universeRoots.length === 0 ? (
-              <div className="text-muted">Aucune racine connue</div>
-            ) : (
-              universeRoots.map((r) => (
-                <div key={r.asset_id} style={{ padding: "10px", background: "rgba(0,0,0,0.2)", borderRadius: "10px", marginBottom: "8px" }}>
-                  <div style={{ fontWeight: 600 }}>{r.asset_name || "(sans nom)"}</div>
-                  <div className="text-muted" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{r.asset_id}</div>
-                </div>
-              ))
-            )}
-          </motion.div>
+          )}
+        </div>
 
-          {/* Lightning Assets (litd) */}
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card" style={{ padding: "20px", marginBottom: "20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-              <span className="text-secondary">⚡ Lightning Assets</span>
-              <button className="btn btn-ghost" onClick={fetchExtras} disabled={loading}>
-                <RefreshCw size={16} /> {t("refresh")}
-              </button>
+        <details className="glass-card" style={{ padding: 16, marginBottom: 14 }}>
+          <summary className="text-secondary" style={{ fontWeight: 600, cursor: "pointer" }}>Ouvrir un canal d'assets</summary>
+          <input className="input" type="number" placeholder="Montant d'assets à engager" value={chanAmount} onChange={(e) => setChanAmount(e.target.value)} style={{ margin: "12px 0 10px" }} />
+          <input className="input" type="number" placeholder="Frais sat/vB" value={chanFee} onChange={(e) => setChanFee(e.target.value)} style={{ marginBottom: 12 }} />
+          <button className="btn btn-secondary" style={{ width: "100%" }} onClick={fundChannel} disabled={loading || !lnAssetId || !chanAmount || !lnPeer}>Ouvrir le canal</button>
+        </details>
+
+        {rfqQuotes && (
+          <div className="text-muted" style={{ textAlign: "center", fontSize: 11 }}>⚡ RFQ : {rfqQuotes.buy_quotes} achat · {rfqQuotes.sell_quotes} vente</div>
+        )}
+      </>
+    );
+  }
+
+  function renderActivity() {
+    return (
+      <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "6px 0 14px" }}>
+          <span className="title-lg">Activité</span>
+          <button className="btn btn-ghost" onClick={fetchExtras} disabled={loading}><RefreshCw size={16} /> {t("refresh")}</button>
+        </div>
+
+        <div className="glass-card" style={{ padding: 20, marginBottom: 14 }}>
+          <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}>Transferts ({transfers.length})</div>
+          {transfers.length === 0 ? <div className="text-muted">Aucun transfert</div> : transfers.map((tr) => (
+            <div key={tr.anchor_txid + tr.timestamp} style={{ ...inner, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600 }}>{tr.total_out.toLocaleString()} · {tr.inputs}→{tr.outputs}</div>
+              <div className="text-muted" style={{ fontSize: 11 }}>{new Date(tr.timestamp * 1000).toLocaleString()} · bloc ~{tr.height_hint}</div>
+              <div className="text-muted" style={{ fontSize: 11, fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{tr.anchor_txid}</div>
             </div>
-            {rfqQuotes && (
-              <div className="text-muted" style={{ fontSize: "12px", marginBottom: "12px" }}>
-                Quotes RFQ : {rfqQuotes.buy_quotes} achat · {rfqQuotes.sell_quotes} vente
+          ))}
+        </div>
+
+        <div className="glass-card" style={{ padding: 20, marginBottom: 14 }}>
+          <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}>Réceptions ({receives.length})</div>
+          {receives.length === 0 ? <div className="text-muted">Aucune réception</div> : receives.map((r, i) => (
+            <div key={r.outpoint + i} style={{ ...inner, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600 }}>{r.status}</div>
+              <div className="text-muted" style={{ fontSize: 11 }}>{new Date(r.timestamp * 1000).toLocaleString()} · {r.utxo_amt_sat.toLocaleString()} sat</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="glass-card" style={{ padding: 20, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <span className="text-secondary" style={{ fontWeight: 600 }}>Mints / batches ({batches.length})</span>
+            <button className="btn btn-ghost" onClick={cancelBatch} disabled={loading} style={{ fontSize: 12 }}>Annuler en attente</button>
+          </div>
+          {batches.length === 0 ? <div className="text-muted">Aucun batch</div> : batches.map((b) => (
+            <div key={b.batch_key} style={{ ...inner, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600 }}>{b.state} · {b.assets} asset(s)</div>
+              {b.batch_txid && <div className="text-muted" style={{ fontSize: 11, fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>tx: {b.batch_txid}</div>}
+            </div>
+          ))}
+        </div>
+
+        {burns.length > 0 && (
+          <div className="glass-card" style={{ padding: 20 }}>
+            <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}>Burns ({burns.length})</div>
+            {burns.map((b, i) => (
+              <div key={b.anchor_txid + i} className="text-muted" style={{ fontSize: 11, fontFamily: "var(--font-mono)", wordBreak: "break-all", marginBottom: 6 }}>
+                <span style={{ color: "var(--danger)" }}>−{b.amount}</span> · {nameById[b.asset_id] || b.asset_id}
               </div>
-            )}
-            <input className="input" placeholder="Asset ID (pour LN)" value={lnAssetId} onChange={(e) => setLnAssetId(e.target.value)} style={{ marginBottom: "10px" }} />
-            <input className="input" placeholder="Peer pubkey (hex)" value={lnPeer} onChange={(e) => setLnPeer(e.target.value)} style={{ marginBottom: "14px" }} />
+            ))}
+          </div>
+        )}
+      </>
+    );
+  }
 
-            <div className="text-secondary" style={{ fontSize: "13px", marginBottom: "8px" }}>Payer une invoice (en assets)</div>
-            <input className="input" placeholder="Invoice BOLT11" value={lnPayReq} onChange={(e) => { setLnPayReq(e.target.value); setLnDecoded(null); }} style={{ marginBottom: "10px" }} />
-            {lnDecoded && (
-              <div className="text-muted" style={{ fontSize: "12px", marginBottom: "10px" }}>
-                {lnDecoded.asset_amount} assets ≈ {lnDecoded.sat_amount} sat · {lnDecoded.description || "(sans description)"}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: "10px", marginBottom: "16px" }}>
-              <button className="btn btn-ghost" onClick={decodeLnInvoice} disabled={loading || !lnPayReq || !lnAssetId}>Décoder</button>
-              <button className="btn btn-primary" onClick={payLnInvoice} disabled={loading || !lnPayReq || !lnAssetId}>
-                <Send size={16} /> Payer
-              </button>
+  function renderAdvanced() {
+    return (
+      <>
+        <div className="title-lg" style={{ margin: "6px 0 14px" }}><Settings size={20} style={{ verticalAlign: "middle" }} /> Avancé</div>
+
+        {nodeInfo && (
+          <div className="glass-card" style={{ padding: 20, marginBottom: 14 }}>
+            <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}>Nœud tapd</div>
+            <div className="text-muted" style={{ fontSize: 12 }}>Réseau : {nodeInfo.network}</div>
+            <div className="text-muted" style={{ fontSize: 12 }}>tapd : {nodeInfo.version}</div>
+            <div className="text-muted" style={{ fontSize: 12 }}>lnd : {nodeInfo.lnd_version}</div>
+            <div className="text-muted" style={{ fontSize: 11, fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{nodeInfo.lnd_pubkey}</div>
+          </div>
+        )}
+
+        <div className="glass-card" style={{ padding: 20, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <span className="text-secondary" style={{ fontWeight: 600 }}>Universe</span>
+            <button className="btn btn-ghost" onClick={fetchExtras} disabled={loading}><RefreshCw size={16} /></button>
+          </div>
+          {universeStats && (
+            <div className="text-muted" style={{ fontSize: 12, marginBottom: 10 }}>{universeStats.num_assets} assets · {universeStats.num_groups} groupes · {universeStats.num_syncs} syncs · {universeStats.num_proofs} preuves</div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+            <input className="input" placeholder="Universe host (ex: universe.lightning.finance:10029)" value={syncHost} onChange={(e) => setSyncHost(e.target.value)} />
+            <button className="btn btn-secondary" style={{ flex: "none" }} onClick={doSyncUniverse} disabled={loading || !syncHost}>Sync</button>
+          </div>
+          {universeRoots.map((r) => (
+            <div key={r.asset_id} style={{ ...inner, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600 }}>{r.asset_name || "(sans nom)"}</div>
+              <div className="text-muted" style={{ fontSize: 11, fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>{r.asset_id}</div>
             </div>
+          ))}
+        </div>
 
-            <div className="text-secondary" style={{ fontSize: "13px", marginBottom: "8px" }}>Recevoir (créer une invoice asset)</div>
-            <input className="input" placeholder="Montant en assets" type="number" value={lnRecvAmount} onChange={(e) => setLnRecvAmount(e.target.value)} style={{ marginBottom: "10px" }} />
-            <input className="input" placeholder="Mémo (optionnel)" value={lnMemo} onChange={(e) => setLnMemo(e.target.value)} style={{ marginBottom: "10px" }} />
-            <button className="btn btn-secondary" onClick={createLnInvoice} disabled={loading || !lnAssetId || !lnRecvAmount || !lnPeer}>
-              Créer invoice
+        <div className="glass-card" style={{ padding: 20, marginBottom: 14 }}>
+          <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}><Download size={16} style={{ verticalAlign: "middle" }} /> {t("taproot.proofBackup")}</div>
+          <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={exportProofs} disabled={proofLoading}>{proofLoading ? <span className="spinner" /> : <Download size={16} />} {t("taproot.exportProofs")}</button>
+            {proofs.length > 0 && <button className="btn btn-ghost" onClick={downloadProofs}><Download size={16} /> {t("backup.download")}</button>}
+          </div>
+          <textarea className="input" placeholder={t("taproot.proofPlaceholder")} value={proofText} onChange={(e) => setProofText(e.target.value)} rows={3} style={{ marginBottom: 12 }} />
+          <button className="btn btn-secondary" style={{ width: "100%" }} onClick={verifyProof} disabled={proofLoading || !proofText}>{proofLoading ? <span className="spinner" /> : <ShieldCheck size={16} />} {t("taproot.verify")}</button>
+          {verifyResult !== null && (
+            <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: verifyResult ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", border: `1px solid ${verifyResult ? "var(--success)" : "var(--danger)"}`, color: verifyResult ? "var(--success)" : "var(--danger)" }}>
+              {verifyResult ? t("taproot.proofValid") : t("taproot.proofInvalid")}
+            </div>
+          )}
+        </div>
+
+        <div className="glass-card" style={{ padding: 20 }}>
+          <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}>Connexion</div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
+            <input type="checkbox" checked={useTor} onChange={(e) => { setUseTor(e.target.checked); }} /> <span className="text-muted" style={{ fontSize: 13 }}>{t("taproot.useTor")} — {torStatus}</span>
+          </label>
+          <button className="btn btn-ghost" onClick={changeNode} style={{ width: "100%" }}>Changer de nœud</button>
+        </div>
+      </>
+    );
+  }
+
+  const tabContent =
+    tab === "portfolio" ? renderPortfolio()
+    : tab === "receive" ? renderReceive()
+    : tab === "send" ? renderSend()
+    : tab === "ln" ? renderLightning()
+    : tab === "activity" ? renderActivity()
+    : renderAdvanced();
+
+  return (
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", position: "relative" }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 18px 8px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button className="btn btn-ghost" onClick={onBack} style={{ padding: "8px 10px" }}><ArrowLeft size={18} /></button>
+          <div>
+            <div className="title-lg" style={{ fontSize: 18 }}>{t("taproot.title")}</div>
+          </div>
+        </div>
+        {connected && (
+          <button className="btn btn-ghost" onClick={() => setTab("advanced")} style={{ padding: "8px 10px", color: tab === "advanced" ? "var(--accent-cyan)" : undefined }} title="Avancé"><Settings size={18} /></button>
+        )}
+      </div>
+
+      {connected && (
+        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "0 18px 6px" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--success)", boxShadow: "0 0 8px var(--success)" }} />
+          <span className="text-muted" style={{ fontSize: 11 }}>Connecté{useTor ? " · via Tor" : ""}{nodeInfo ? ` · ${nodeInfo.network}` : ""}</span>
+        </div>
+      )}
+
+      {/* Scroll body */}
+      <div style={{ flex: 1, overflowY: "auto", padding: connected ? "6px 16px 96px" : "6px 16px 24px" }}>
+        {!connected ? renderConnect() : tabContent}
+        {connected && errorBox}
+      </div>
+
+      {/* Bottom tab bar + FAB (connected only) */}
+      {connected && (
+        <>
+          <div style={{ position: "absolute", bottom: 88, right: 16, zIndex: 25 }}>
+            <button
+              onClick={() => setMintOpen(true)}
+              title="Émettre un asset"
+              style={{ width: 56, height: 56, borderRadius: 18, border: "none", cursor: "pointer", color: "#000", background: "linear-gradient(135deg, var(--accent-cyan), var(--accent-purple))", boxShadow: "0 10px 30px rgba(0,240,255,0.35)", display: "grid", placeItems: "center" }}
+            >
+              <Plus size={26} />
             </button>
-            {lnBolt11 && (
-              <div style={{ marginTop: "10px", padding: "10px", background: "rgba(0,0,0,0.2)", borderRadius: "10px", display: "flex", gap: "8px", alignItems: "center" }}>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", flex: 1, wordBreak: "break-all" }}>{lnBolt11}</span>
-                <button className="btn btn-ghost" onClick={() => { navigator.clipboard.writeText(lnBolt11); notify(t("notifications.addressCopied"), "success"); }}>
-                  <Copy size={16} />
-                </button>
-              </div>
-            )}
-
-            <div className="text-secondary" style={{ fontSize: "13px", margin: "16px 0 8px" }}>Ouvrir un canal d'assets</div>
-            <input className="input" placeholder="Montant d'assets à engager" type="number" value={chanAmount} onChange={(e) => setChanAmount(e.target.value)} style={{ marginBottom: "10px" }} />
-            <input className="input" placeholder="Frais sat/vB" type="number" value={chanFee} onChange={(e) => setChanFee(e.target.value)} style={{ marginBottom: "12px" }} />
-            <button className="btn btn-secondary" onClick={fundChannel} disabled={loading || !lnAssetId || !chanAmount || !lnPeer}>
-              Ouvrir le canal
-            </button>
-          </motion.div>
+          </div>
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 72, display: "flex", padding: "8px 6px 12px", background: "rgba(5,5,8,0.92)", backdropFilter: "blur(16px)", borderTop: "1px solid var(--border)", zIndex: 20 }}>
+            {TABS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: "none", border: "none", cursor: "pointer", fontSize: 10, paddingTop: 4, color: tab === id ? "var(--accent-cyan)" : "var(--text-muted)" }}
+              >
+                <Icon size={21} />
+                {label}
+              </button>
+            ))}
+          </div>
         </>
       )}
 
-      {error && <div className="error">{error}</div>}
+      {/* Mint sheet */}
+      {mintOpen && (
+        <div style={{ position: "absolute", inset: 0, background: "var(--bg-primary)", zIndex: 30, display: "flex", flexDirection: "column", padding: "20px 16px 16px", overflowY: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <span className="title-lg"><Plus size={20} style={{ verticalAlign: "middle" }} /> Émettre un asset</span>
+            <button className="btn btn-ghost" onClick={() => setMintOpen(false)} style={{ padding: "8px 10px" }}><X size={18} /></button>
+          </div>
+          <div className="glass-card" style={{ padding: 20 }}>
+            <input className="input" placeholder={t("taproot.mintName")} value={mintName} onChange={(e) => setMintName(e.target.value)} style={{ marginBottom: 10 }} />
+            <input className="input" type="number" placeholder={t("taproot.mintSupply")} value={mintAmount} onChange={(e) => setMintAmount(e.target.value)} style={{ marginBottom: 10 }} disabled={mintCollectible} />
+            <input className="input" placeholder={t("taproot.mintMetadata")} value={mintMeta} onChange={(e) => setMintMeta(e.target.value)} style={{ marginBottom: 12 }} />
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
+              <input type="checkbox" checked={mintCollectible} onChange={(e) => setMintCollectible(e.target.checked)} /> <span className="text-secondary" style={{ fontSize: 13 }}>Collectible (NFT)</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, cursor: "pointer" }}>
+              <input type="checkbox" checked={mintNewGroup} onChange={(e) => setMintNewGroup(e.target.checked)} /> <span className="text-secondary" style={{ fontSize: 13 }}>Nouveau groupe</span>
+            </label>
+            <input className="input" type="number" placeholder="Frais sat/vB (0 = auto)" value={mintFee} onChange={(e) => setMintFee(e.target.value)} style={{ marginBottom: 12 }} />
+            {errorBox}
+            <button className="btn btn-primary" style={{ width: "100%" }} onClick={mint} disabled={loading || !mintName || (!mintCollectible && !mintAmount)}>{loading ? <span className="spinner" /> : <Plus size={16} />} Finaliser le batch</button>
+          </div>
+        </div>
+      )}
+
+      {/* Burn confirmation modal */}
+      {burnTarget && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 40, background: "rgba(2,4,7,0.72)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 22 }}>
+          <div className="glass-card" style={{ padding: 22, width: "100%", maxWidth: 330 }}>
+            <div style={{ width: 52, height: 52, borderRadius: 16, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", display: "grid", placeItems: "center", margin: "0 auto 12px", color: "var(--danger)" }}><Flame size={24} /></div>
+            <h3 style={{ textAlign: "center", fontSize: 17, marginBottom: 6 }}>Brûler {burnTarget.name || "cet asset"} ?</h3>
+            <p className="text-muted" style={{ textAlign: "center", fontSize: 13, marginBottom: 16 }}>Cette action détruit définitivement les assets. <b>Irréversible.</b></p>
+            <label className="text-muted" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>Montant à brûler (max {fmtAmount(burnTarget.amount, burnTarget.decimal_display)})</label>
+            <input className="input" type="number" value={burnModalAmt} onChange={(e) => setBurnModalAmt(e.target.value)} style={{ marginBottom: 14 }} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setBurnTarget(null)}>Annuler</button>
+              <button className="btn btn-danger" style={{ flex: 1 }} onClick={confirmBurn} disabled={loading || !burnModalAmt || Number(burnModalAmt) <= 0}>{loading ? <span className="spinner" /> : <Flame size={16} />} Brûler</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <PasswordPrompt
         open={passwordPromptOpen}
