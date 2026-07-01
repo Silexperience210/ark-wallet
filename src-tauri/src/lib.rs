@@ -19,19 +19,14 @@ use tor::TorService;
 /// Status of a background initialization task (Ark service start, tapd connect).
 /// Surfaced to the frontend via `get_background_init_status` so a silent failure
 /// during unlock is observable instead of fire-and-forget.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 #[serde(tag = "state", content = "error", rename_all = "lowercase")]
 pub enum TaskState {
+    #[default]
     Idle,
     Pending,
     Ready,
     Failed(String),
-}
-
-impl Default for TaskState {
-    fn default() -> Self {
-        TaskState::Idle
-    }
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -86,7 +81,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
-            let data_dir = WalletState::data_dir(&app.handle())?;
+            let data_dir = WalletState::data_dir(app.handle())?;
             app.manage(WalletState::new(data_dir));
             Ok(())
         })
