@@ -1010,8 +1010,13 @@ impl TaprootClient {
         memo: &str,
     ) -> Result<String, String> {
         let asset_id = hex::decode(asset_id).map_err(|e| format!("invalid asset id: {e}"))?;
-        let peer_pubkey =
-            hex::decode(peer_pubkey).map_err(|e| format!("invalid peer pubkey: {e}"))?;
+        // Empty peer => let litd auto-select the asset channel (single-channel case),
+        // mirroring pay_asset_invoice. Avoids forcing the user to paste a peer pubkey.
+        let peer_pubkey = if peer_pubkey.trim().is_empty() {
+            vec![]
+        } else {
+            hex::decode(peer_pubkey).map_err(|e| format!("invalid peer pubkey: {e}"))?
+        };
         let invoice = lnrpc::Invoice {
             memo: memo.to_string(),
             ..Default::default()

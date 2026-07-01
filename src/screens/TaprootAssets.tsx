@@ -330,6 +330,15 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
     }
   }, [connected, assets, lnAssetId]);
 
+  // Auto-decode a Lightning invoice as soon as it's scanned/pasted (asset known).
+  useEffect(() => {
+    const inv = lnPayReq.trim().toLowerCase();
+    if (connected && lnAssetId && inv.startsWith("lnbc") && inv.length > 60) {
+      decodeLnInvoice();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lnPayReq, lnAssetId]);
+
   async function loadTorConfig() {
     try {
       const cfg = await invoke<{ enabled: boolean; force_tor: boolean }>("load_tor_config");
@@ -564,7 +573,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
   }
 
   async function createLnInvoice() {
-    if (!lnAssetId || !lnRecvAmount || !lnPeer) return;
+    if (!lnAssetId || !lnRecvAmount) return;
     setLoading(true);
     setError("");
     setLnBolt11("");
@@ -997,6 +1006,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
             <div style={{ ...inner, marginBottom: 11, borderColor: "rgba(0,240,255,0.22)" }}>
               <div style={{ fontWeight: 700 }}>{lnDecoded.asset_amount.toLocaleString()} {nameById[lnAssetId] || "asset"} <span className="text-muted" style={{ fontWeight: 400 }}>≈ {lnDecoded.sat_amount.toLocaleString()} sat</span></div>
               <div className="text-muted" style={{ fontSize: 12 }}>{lnDecoded.description || "(sans description)"}</div>
+              <div className="text-muted" style={{ fontSize: 11, marginTop: 6 }}>↳ payé via ton canal d'assets · peer auto ✓</div>
             </div>
           )}
           <div style={{ display: "flex", gap: 10 }}>
@@ -1004,7 +1014,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
             <button className="btn btn-primary" style={{ flex: 1 }} onClick={payLnInvoice} disabled={loading || !lnPayReq || !lnAssetId}>{loading ? <span className="spinner" /> : <Zap size={16} />} Payer</button>
           </div>
           <details style={{ marginTop: 12 }}>
-            <summary className="text-muted" style={{ fontSize: 11, cursor: "pointer" }}>Peer (avancé — auto-détection à venir)</summary>
+            <summary className="text-muted" style={{ fontSize: 11, cursor: "pointer" }}>Peer (avancé — auto par défaut, laisser vide)</summary>
             <input className="input" placeholder="Peer pubkey (hex)" value={lnPeer} onChange={(e) => setLnPeer(e.target.value)} style={{ marginTop: 8 }} />
           </details>
         </div>
@@ -1014,7 +1024,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
           <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}><ArrowDownLeft size={16} style={{ verticalAlign: "middle" }} /> Recevoir en assets</div>
           <input className="input" type="number" placeholder="Montant (assets)" value={lnRecvAmount} onChange={(e) => setLnRecvAmount(e.target.value)} style={{ marginBottom: 10 }} />
           <input className="input" placeholder="Mémo (optionnel)" value={lnMemo} onChange={(e) => setLnMemo(e.target.value)} style={{ marginBottom: 10 }} />
-          <button className="btn btn-secondary" style={{ width: "100%" }} onClick={createLnInvoice} disabled={loading || !lnAssetId || !lnRecvAmount || !lnPeer}>Créer une invoice</button>
+          <button className="btn btn-secondary" style={{ width: "100%" }} onClick={createLnInvoice} disabled={loading || !lnAssetId || !lnRecvAmount}>Créer une invoice</button>
           {lnBolt11 && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginTop: 14 }}>
               <QRImage value={lnBolt11} />
