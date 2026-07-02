@@ -1073,6 +1073,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
           {lnDecoded && (
             <div style={{ ...inner, marginBottom: 11, borderColor: "rgba(0,240,255,0.22)" }}>
               <div style={{ fontWeight: 700 }}>{lnDecoded.asset_amount.toLocaleString()} {nameById[lnAssetId] || "asset"} <span className="text-muted" style={{ fontWeight: 400 }}>≈ {lnDecoded.sat_amount.toLocaleString()} sat</span></div>
+              <div className="text-muted" style={{ fontSize: 11, marginTop: 3 }}>1 {nameById[lnAssetId] || "asset"} ≈ {(lnDecoded.sat_amount / Math.max(1, lnDecoded.asset_amount)).toLocaleString(undefined, { maximumFractionDigits: 4 })} sat (RFQ)</div>
               <div className="text-muted" style={{ fontSize: 12 }}>{lnDecoded.description || "(sans description)"}</div>
               <div className="text-muted" style={{ fontSize: 11, marginTop: 6 }}>{t("taproot.paidViaChannel")}</div>
             </div>
