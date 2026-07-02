@@ -1013,9 +1013,10 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
       <>
         <div className="title-lg" style={{ margin: "6px 0 14px" }}>{t("taproot.tabSend")}</div>
         <div className="glass-card" style={{ padding: 20 }}>
+          <div className="text-muted" style={{ fontSize: 11, lineHeight: 1.45, marginBottom: 12, padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 8 }}>{t("taproot.sendOnchainHint")}</div>
           <label className="text-muted" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>{t("taproot.taprootAddress")}</label>
           <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-            <input className="input" style={{ flex: 1 }} placeholder="taprt1…" value={sendAddress} onChange={(e) => { setSendAddress(e.target.value); setDecoded(null); }} />
+            <input className="input" style={{ flex: 1 }} placeholder="tapbc1…" value={sendAddress} onChange={(e) => { setSendAddress(e.target.value); setDecoded(null); }} />
             <button className="btn btn-secondary" style={{ flex: "none", padding: "0 14px" }} onClick={() => scanInto((v) => { setSendAddress(v); setDecoded(null); })}><ScanLine size={18} /></button>
           </div>
           {decoded && (
@@ -1050,6 +1051,7 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
         {/* PAY (primary) */}
         <div className="glass-card" style={{ padding: 20, marginBottom: 14, borderColor: "rgba(0,240,255,0.22)" }}>
           <div className="text-secondary" style={{ fontWeight: 600, marginBottom: 12 }}><ArrowUpRight size={16} style={{ verticalAlign: "middle" }} /> {t("taproot.payInvoice")}</div>
+          <div className="text-muted" style={{ fontSize: 11, lineHeight: 1.45, marginBottom: 12, padding: "8px 10px", background: "rgba(0,240,255,0.05)", borderRadius: 8 }}>{t("taproot.lnPayHint")}</div>
           <button className="btn btn-primary" style={{ width: "100%", marginBottom: 12 }} onClick={() => scanInto((v) => { setLnPayReq(v); setLnDecoded(null); })}><ScanLine size={18} /> {t("taproot.scanQr")}</button>
           <div className="text-muted" style={{ textAlign: "center", fontSize: 11, marginBottom: 10 }}>{t("taproot.orPasteInvoice")}</div>
           <input className="input" placeholder="lnbc…" value={lnPayReq} onChange={(e) => { setLnPayReq(e.target.value); setLnDecoded(null); }} style={{ marginBottom: 11 }} />
