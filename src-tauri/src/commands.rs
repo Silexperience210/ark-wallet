@@ -623,7 +623,24 @@ pub async fn connect_default_tapd(
         return Err("no default tapd node is configured".into());
     }
 
-    let is_onion = defaults.host.trim().ends_with(".onion");
+    // Robustly detect .onion even when the host carries a scheme and/or a port
+    // (e.g. "https://abc.onion:10029"): parse it the same way `connect()` does
+    // and inspect only the host component. A naive `ends_with(".onion")` on the
+    // raw string is false for a ported host, which would leave Tor disabled
+    // (TorConfig defaults to enabled=false) and fail with "Tor is required for
+    // .onion tapd hosts".
+    let is_onion = {
+        let h = defaults.host.trim();
+        let normalized = if h.starts_with("http://") || h.starts_with("https://") {
+            h.to_string()
+        } else {
+            format!("https://{h}")
+        };
+        url::Url::parse(&normalized)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.ends_with(".onion")))
+            .unwrap_or(false)
+    };
     let config = taproot::TapdConfig {
         host: defaults.host,
         cert_pem: defaults.cert_pem,

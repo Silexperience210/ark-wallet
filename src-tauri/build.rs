@@ -81,18 +81,20 @@ fn inject_tapd_defaults() {
 
     let mut have_any_default = false;
     for (env_key, json_key) in mapping {
-        // The environment variable (e.g. a CI secret) takes precedence. If it is
-        // set and non-empty, leave it for `option_env!` to read from the inherited
-        // environment and skip the JSON for this key.
-        if std::env::var(env_key)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-        {
-            have_any_default = true;
-            continue;
-        }
-
-        let raw = parsed.get(json_key).and_then(|v| v.as_str()).unwrap_or("");
+        // The environment variable (e.g. a CI secret) takes precedence; the JSON
+        // file only fills in the gaps. We always re-emit `cargo:rustc-env` here
+        // (rather than relying on `option_env!` reading the inherited env), so the
+        // value is injected deterministically through the whole Gradle → cargo →
+        // rustc chain and the multi-line PEM cert is normalized to the single-line
+        // form `tapd_defaults.rs` expects.
+        let raw = match std::env::var(env_key) {
+            Ok(v) if !v.trim().is_empty() => v,
+            _ => parsed
+                .get(json_key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        };
         if raw.trim().is_empty() {
             continue;
         }
