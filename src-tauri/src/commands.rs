@@ -147,11 +147,22 @@ async fn initialize_wallet_state(
         }
     });
 
+    // Supervisor: keep tapd connected mid-session (health-check + auto-reconnect),
+    // and retry the initial connect if the first onion attempt was flaky.
+    let sup_app = app_handle.clone();
+    let sup_tor = state.tor.clone();
+    let sup_taproot = state.taproot.clone();
+    let sup_password = password.to_string();
+    let sup_handle = tauri::async_runtime::spawn(async move {
+        taproot::supervise_tapd(sup_app, sup_tor, sup_taproot, sup_password).await;
+    });
+
     // Keep the handles so they are supervised (and can be aborted on delete) rather
     // than fully detached.
     if let Ok(mut tasks) = state.bg_tasks.lock() {
         tasks.push(ark_handle);
         tasks.push(tapd_handle);
+        tasks.push(sup_handle);
     }
 
     Ok(())

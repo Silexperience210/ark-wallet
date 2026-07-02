@@ -1342,7 +1342,22 @@ pub async fn reconnect_tapd_bg(
         }
     };
 
-    let is_onion = config.host.trim().ends_with(".onion");
+    // Robust .onion detection: the host may carry a scheme and/or the :10029 port,
+    // which a naive `ends_with(".onion")` misses → Tor never starts → connect fails.
+    // This is what made auto-connect-on-unlock silently do nothing for the default
+    // node. Parse it like `connect()` does and test only the host component.
+    let is_onion = {
+        let h = config.host.trim();
+        let normalized = if h.starts_with("http://") || h.starts_with("https://") {
+            h.to_string()
+        } else {
+            format!("https://{h}")
+        };
+        url::Url::parse(&normalized)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.ends_with(".onion")))
+            .unwrap_or(false)
+    };
     let tor_config = crate::tor::TorConfig::load(&app_handle).unwrap_or_default();
     // Always use Tor for .onion hosts (consistent with connect_tapd).
     let use_tor = is_onion || tor_config.force_tor || tor_config.enabled;
@@ -1359,4 +1374,46 @@ pub async fn reconnect_tapd_bg(
     client.spawn_event_streams(app_handle.clone());
     *taproot.lock().await = Some(client);
     Ok(true)
+}
+
+/// Background supervisor: every 30s, health-check the tapd connection with a cheap
+/// `get_info` RPC and transparently reconnect if the Tor circuit / gRPC stream has
+/// dropped. Makes the wallet self-heal mid-session instead of appearing
+/// disconnected until the user reopens the screen; also retries the initial
+/// connect if the first (often flaky) onion attempt failed. Spawned once at unlock.
+pub async fn supervise_tapd(
+    app_handle: AppHandle,
+    tor: std::sync::Arc<tokio::sync::Mutex<crate::tor::TorService>>,
+    taproot: std::sync::Arc<tokio::sync::Mutex<Option<TaprootClient>>>,
+    password: String,
+) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Snapshot (cheap gRPC channel clone) so the health-check RPC doesn't hold
+        // the lock and block UI-triggered tapd calls.
+        let snapshot = { taproot.lock().await.clone() };
+        let mut healthy = false;
+        if let Some(mut client) = snapshot {
+            healthy = client.get_info().await.is_ok();
+            if !healthy {
+                // Stream is dead — drop it so the reconnect below re-establishes.
+                *taproot.lock().await = None;
+                let _ = app_handle.emit("tapd-status", "reconnecting");
+            }
+        }
+
+        if !healthy {
+            if let Ok(true) = reconnect_tapd_bg(
+                app_handle.clone(),
+                tor.clone(),
+                taproot.clone(),
+                password.clone(),
+            )
+            .await
+            {
+                let _ = app_handle.emit("tapd-status", "connected");
+            }
+        }
+    }
 }

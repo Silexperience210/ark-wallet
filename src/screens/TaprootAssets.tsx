@@ -359,6 +359,21 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
     };
   }, []);
 
+  // The backend supervisor transparently reconnects tapd mid-session (Tor circuit
+  // drops, etc.). Reflect that here so the UI never gets stuck on a stale
+  // "disconnected" view and refreshes once the link is back.
+  useEffect(() => {
+    const un = listen<string>("tapd-status", (e) => {
+      if (e.payload === "connected") {
+        setConnected(true);
+        fetchAssets();
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   // Auto-select the only asset for Lightning flows so the user never pastes a hex id.
   useEffect(() => {
     if (connected && !lnAssetId && assets.length === 1) {
