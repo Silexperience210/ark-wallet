@@ -236,17 +236,38 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
     let cancelled = false;
     (async () => {
       await loadTorConfig();
+
+      // If the backend already holds a live tapd connection (e.g. we left for the
+      // dashboard and came back), reuse it — don't show the connect screen or
+      // reconnect from scratch. The connection lives in the Rust backend and
+      // survives screen changes; the UI just has to re-read it. This is what fixes
+      // "it disconnects when I open the dashboard".
+      try {
+        const live = await invoke<boolean>("get_tapd_status");
+        if (live) {
+          if (cancelled) return;
+          setConnected(true);
+          setAutoConnecting(false);
+          refreshTorStatus();
+          await fetchAssets();
+          return;
+        }
+      } catch {
+        // fall through to the normal connect flow
+      }
+
       // Check if defaults are configured
+      let haveDefaults = false;
       try {
         const defaults = await invoke<{
           host: string;
           cert_pem: string;
           macaroon_hex: string;
         }>("get_tapd_defaults");
-        setHasDefaults(
+        haveDefaults =
           defaults.host.trim().length > 0 &&
-            defaults.macaroon_hex.trim().length > 0
-        );
+          defaults.macaroon_hex.trim().length > 0;
+        setHasDefaults(haveDefaults);
       } catch {
         setHasDefaults(false);
       }
@@ -268,8 +289,14 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
 
           if (tapd.state === "failed") {
             if (cancelled) return;
-            setAutoConnecting(false);
             refreshTorStatus();
+            // Background init couldn't connect. If a default node is embedded,
+            // auto-connect it (with retry) instead of forcing a manual tap.
+            if (haveDefaults) {
+              if (!cancelled) await connectDefaultNode();
+              return;
+            }
+            setAutoConnecting(false);
             setError(
               tapd.error ||
                 "La connexion au nœud tapd a échoué. Veuillez vérifier l'adresse, le certificat et le macaroon, puis réessayer."
@@ -278,10 +305,15 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
           }
 
           if (tapd.state === "idle") {
-            // No saved config and no defaults — user must connect manually
             if (cancelled) return;
-            setAutoConnecting(false);
             refreshTorStatus();
+            // No saved config: auto-connect the default node if one is embedded,
+            // otherwise let the user connect manually.
+            if (haveDefaults) {
+              if (!cancelled) await connectDefaultNode();
+              return;
+            }
+            setAutoConnecting(false);
             return;
           }
 
@@ -298,10 +330,14 @@ export function TaprootAssets({ onBack }: TaprootAssetsProps) {
         }
         await new Promise((r) => setTimeout(r, 2000));
       }
-      // Timeout after ~80s
+      // Timeout after ~80s: last resort, try the default node explicitly.
       if (!cancelled) {
-        setAutoConnecting(false);
         refreshTorStatus();
+        if (haveDefaults) {
+          await connectDefaultNode();
+          return;
+        }
+        setAutoConnecting(false);
         setError(
           "Délai de connexion dépassé (80s). Veuillez entrer les informations de votre nœud tapd manuellement, ou utiliser le bouton \"Nœud par défaut\" si configuré."
         );
