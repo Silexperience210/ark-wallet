@@ -2,7 +2,13 @@
 
 A self-custodial Bitcoin wallet for mobile and desktop, combining on-chain Bitcoin, ARK Layer 2, Lightning payments, and Taproot Assets — with an embedded Tor client for private `.onion` connections to your own node.
 
-![OZark Wallet mockups](./docs/ozark-wallet-mockups.png)
+<p align="center">
+  <img src="./docs/shot-portfolio.png" width="24%" alt="Portfolio" />
+  <img src="./docs/shot-receive.png" width="24%" alt="Receive with QR" />
+  <img src="./docs/shot-lightning.png" width="24%" alt="Lightning — scan to pay" />
+  <img src="./docs/shot-burn.png" width="24%" alt="Burn confirmation" />
+</p>
+<p align="center"><sub>Taproot Assets UI — Portfolio · Receive (QR) · Lightning (scan-to-pay) · Burn confirmation</sub></p>
 
 ## Features
 
